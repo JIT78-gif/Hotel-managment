@@ -1,0 +1,104 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    background: #FAF5EE;
+    color-scheme: light;
+  }
+  body {
+    @apply font-sans text-ink antialiased;
+    background-color: #FAF5EE;
+    background-image:
+      radial-gradient(ellipse at top, rgba(194, 91, 62, 0.06), transparent 60%),
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='1' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.42  0 0 0 0 0.37  0 0 0 0 0.32  0 0 0 0.035 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    background-attachment: fixed;
+    min-height: 100dvh;
+  }
+  ::selection { background: #C25B3E; color: #FAF5EE; }
+  h1, h2, h3 { @apply font-display tracking-tight; }
+}
+
+@layer components {
+  .display-xl {
+    @apply font-display text-5xl md:text-7xl leading-[0.95] tracking-tight;
+    font-weight: 500;
+    font-variation-settings: "opsz" 144, "SOFT" 100;
+  }
+  .display-lg {
+    @apply font-display text-4xl md:text-5xl leading-[1.02] tracking-tight;
+    font-weight: 500;
+    font-variation-settings: "opsz" 96, "SOFT" 70;
+  }
+  .display-md {
+    @apply font-display text-2xl md:text-3xl leading-tight;
+    font-weight: 500;
+  }
+  .eyebrow {
+    @apply uppercase tracking-[0.18em] text-xs text-terracotta font-medium;
+  }
+  .card {
+    @apply rounded-2xl bg-cream border border-parchment shadow-soft;
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-full bg-ink text-cream
+           px-6 py-3 font-medium tracking-tight transition
+           hover:bg-terracotta active:scale-[0.98] disabled:opacity-40
+           disabled:cursor-not-allowed min-h-[44px];
+  }
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-full bg-parchment text-ink
+           px-5 py-3 font-medium tracking-tight transition hover:bg-terracotta hover:text-cream
+           active:scale-[0.98] disabled:opacity-40 min-h-[44px];
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-full text-ink
+           px-4 py-2 font-medium tracking-tight transition hover:bg-parchment
+           active:scale-[0.98] min-h-[40px];
+  }
+  .input {
+    @apply w-full rounded-xl bg-cream border border-parchment px-4 py-3 text-ink
+           placeholder:text-muted/60 focus:outline-none focus:border-terracotta
+           focus:ring-4 focus:ring-terracotta/15 transition min-h-[44px];
+  }
+  .label {
+    @apply block text-xs uppercase tracking-[0.14em] text-muted mb-1.5 font-medium;
+  }
+  .badge {
+    @apply inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium;
+  }
+  .badge-placed   { @apply bg-amber-100 text-amber-900; }
+  .badge-preparing { @apply bg-blue-100 text-blue-900; }
+  .badge-ready     { @apply bg-emerald-100 text-emerald-900; }
+  .badge-served    { @apply bg-stone-200 text-stone-700; }
+}
+
+.live-dot {
+  width: 8px; height: 8px; border-radius: 9999px;
+  background: #C25B3E; display: inline-block;
+  animation: pulse_dot 1.4s ease-in-out infinite;
+}
+@keyframes pulse_dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.4; transform: scale(0.85); }
+}
+
+/* Hide scrollbars (for category strip) but keep scroll behavior */
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* Smooth snap for horizontal category strip on mobile */
+.snap-strip { scroll-snap-type: x mandatory; scroll-padding-left: 1.25rem; }
+.snap-strip > * { scroll-snap-align: start; }
+
+/* Sheet that slides up from bottom on mobile */
+@keyframes sheet_up {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+.animate-sheet-up { animation: sheet_up 280ms cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+
+/* Safe-area for fixed bottom CTAs on iOS */
+.safe-bottom { padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 1rem); }
+.safe-top    { padding-top:   env(safe-area-inset-top, 0px); }

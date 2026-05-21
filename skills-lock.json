@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "skills": {
+    "ads-creative": {
+      "source": "agricidaniel/claude-ads",
+      "sourceType": "github",
+      "skillPath": "skills/ads-creative/SKILL.md",
+      "computedHash": "e6fa6fe8c6ffd8b4fe15094046fa59c738c0a285b8ae49d559b32b69e8624717"
+    },
+    "idea-refine": {
+      "source": "addyosmani/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/idea-refine/SKILL.md",
+      "computedHash": "525f928bccf704e28f5be90f55d0bba94517e566034a45b92b71e2ae11a7ad0b"
+    },
+    "marketing-ideas": {
+      "source": "ognjengt/founder-skills",
+      "sourceType": "github",
+      "skillPath": "skills/marketing-ideas/SKILL.md",
+      "computedHash": "8f487d368aa72bb5f90a671d90a766b233726c857c6756bcc94cb4e8d79e3fb8"
+    },
+    "penpot-uiux-design": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "skillPath": "skills/penpot-uiux-design/SKILL.md",
+      "computedHash": "cd29e08bb7d2d4b9212582bcd9b70823619fbc6397078b8ba853962054ba4230"
+    }
+  }
+}

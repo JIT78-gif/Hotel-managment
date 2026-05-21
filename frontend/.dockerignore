@@ -1,0 +1,22 @@
+node_modules
+.next
+.next-build
+out
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+*.log
+npm-debug.log*
+yarn-error.log
+
+# IDE / OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Test / dev only
+coverage
+.eslintcache

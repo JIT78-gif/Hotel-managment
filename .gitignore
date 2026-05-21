@@ -1,0 +1,68 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+out/
+.npm/
+*.log
+npm-debug.log*
+yarn-error.log
+yarn-debug.log
+.eslintcache
+next-env.d.ts
+*.tsbuildinfo
+
+# --- Environment & secrets ---
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+
+# --- Local databases & uploads ---
+*.db
+*.sqlite
+*.sqlite3
+app.db-journal
+
+# --- Docker local state ---
+docker-data/
+volumes/
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+.history/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# --- Build / dist ---
+dist/
+build/
+.turbo/
+
+# --- Claude local config (Claude Code project state, not your code) ---
+.claude/
+
+# --- Local-only ---
+*.bak
+*.tmp
+.tmp/

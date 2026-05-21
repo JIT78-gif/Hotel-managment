@@ -1,0 +1,66 @@
+# Hotel Cafe Ordering — Docker Compose
+# Works locally for prod-like testing and is the same file EasyPanel can import.
+#
+# Usage:
+#   cp .env.example .env   # fill in HOTEL_JWT_SECRET etc.
+#   docker compose build
+#   docker compose up -d
+#   docker compose exec backend python seed_demo.py
+#
+# Open:
+#   Customer / staff / admin → http://localhost:3000
+#   API docs                  → http://localhost:8000/docs
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hotel-cafe-backend:latest
+    container_name: hotel-cafe-backend
+    restart: unless-stopped
+    environment:
+      HOTEL_JWT_SECRET: ${HOTEL_JWT_SECRET:?HOTEL_JWT_SECRET must be set (see .env.example)}
+      HOTEL_CORS_ORIGINS: ${HOTEL_CORS_ORIGINS:-*}
+      HOTEL_DB_PATH: /data/app.db
+    volumes:
+      - hotel-data:/data
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    networks:
+      - hotel-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8000/health',timeout=3).status==200 else sys.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Bake in the public WS URL at build time (only needed when the backend
+        # lives on a different domain than the frontend; leave blank for
+        # same-host setups behind a reverse proxy).
+        NEXT_PUBLIC_BACKEND_WS_URL: ${NEXT_PUBLIC_BACKEND_WS_URL:-}
+    image: hotel-cafe-frontend:latest
+    container_name: hotel-cafe-frontend
+    restart: unless-stopped
+    environment:
+      # The Next.js server proxies /api/* and forwards WS upgrades to backend
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - hotel-net
+
+volumes:
+  hotel-data:
+
+networks:
+  hotel-net:

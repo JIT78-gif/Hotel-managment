@@ -1,0 +1,26 @@
+__pycache__
+*.pyc
+.pytest_cache
+.venv
+venv
+env
+.env
+.env.*
+!.env.example
+
+# Frontend has its own image
+frontend
+
+# Local SQLite + menu source images
+app.db
+*.db
+menu
+
+# IDE / OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Tests aren't needed at runtime but cheap to include — uncomment to exclude:
+# tests
