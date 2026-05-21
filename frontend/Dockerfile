@@ -17,6 +17,13 @@ COPY . .
 # Optional: override the WS URL at build time when backend has its own domain (e.g. wss://api.example.com)
 ARG NEXT_PUBLIC_BACKEND_WS_URL=""
 ENV NEXT_PUBLIC_BACKEND_WS_URL=${NEXT_PUBLIC_BACKEND_WS_URL}
+
+# Backend URL used by Next.js's /api/* rewrite — MUST be set at build time
+# because output: "standalone" bakes the rewrite destination into the build.
+# Default matches EasyPanel's internal Docker hostname pattern.
+ARG BACKEND_URL=http://meusite_backend:8000
+ENV BACKEND_URL=${BACKEND_URL}
+
 ENV NEXT_TELEMETRY_DISABLED=1
 
 # Ensure public/ exists (Next.js doesn't create one if there are no static assets)
