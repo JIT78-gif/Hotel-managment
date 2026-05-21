@@ -19,6 +19,9 @@ ARG NEXT_PUBLIC_BACKEND_WS_URL=""
 ENV NEXT_PUBLIC_BACKEND_WS_URL=${NEXT_PUBLIC_BACKEND_WS_URL}
 ENV NEXT_TELEMETRY_DISABLED=1
 
+# Ensure public/ exists (Next.js doesn't create one if there are no static assets)
+RUN mkdir -p public
+
 RUN npm run build
 
 # ---- runner ----
