@@ -24,7 +24,12 @@ export default function CheckinPage() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setErr(null); setBusy(true);
+    setErr(null);
+    if (phone.length !== 10) {
+      setErr("Phone number must be 10 digits.");
+      return;
+    }
+    setBusy(true);
     try {
       const r = await api<CheckinResp>("/customer/checkin", {
         method: "POST",
@@ -32,7 +37,7 @@ export default function CheckinPage() {
           cafe_id,
           table_number: tableNumber.trim(),
           name: name.trim(),
-          phone: phone.trim(),
+          phone: `+91${phone}`,
         },
       });
       saveCustomerSession({
@@ -45,7 +50,11 @@ export default function CheckinPage() {
       });
       router.push("/customer/menu");
     } catch (e: any) {
-      setErr(e.message || "Could not check in");
+      if (e.status === 404) {
+        setErr("Couldn't find that table. Double-check the table number on your QR card.");
+      } else {
+        setErr(e.message || "Could not check in");
+      }
     } finally {
       setBusy(false);
     }
@@ -84,7 +93,7 @@ export default function CheckinPage() {
                 <label className="label" htmlFor="tablenum">Your table number</label>
                 <input
                   id="tablenum"
-                  className="input text-base text-center font-display text-2xl tracking-wider"
+                  className="input text-center font-display text-2xl tracking-wider"
                   required
                   maxLength={20}
                   autoComplete="off"
@@ -110,19 +119,29 @@ export default function CheckinPage() {
               </div>
               <div>
                 <label className="label" htmlFor="phone">Phone</label>
-                <input
-                  id="phone"
-                  className="input text-base"
-                  required
-                  type="tel"
-                  inputMode="tel"
-                  autoComplete="tel"
-                  minLength={4}
-                  maxLength={20}
-                  value={phone}
-                  onChange={e => setPhone(e.target.value)}
-                  placeholder="For the bill / WhatsApp receipt"
-                />
+                <div className="flex items-stretch rounded-xl border border-parchment focus-within:border-terracotta focus-within:ring-2 focus-within:ring-terracotta/20 overflow-hidden bg-white">
+                  <span
+                    className="px-3 flex items-center text-muted text-base font-medium bg-parchment/40 border-r border-parchment select-none"
+                    aria-hidden="true"
+                  >
+                    +91
+                  </span>
+                  <input
+                    id="phone"
+                    className="flex-1 px-3 py-2 text-base bg-transparent outline-none tabular-nums tracking-wide"
+                    required
+                    type="tel"
+                    inputMode="numeric"
+                    autoComplete="tel-national"
+                    pattern="[0-9]{10}"
+                    minLength={10}
+                    maxLength={10}
+                    value={phone}
+                    onChange={e => setPhone(e.target.value.replace(/\D/g, "").slice(0, 10))}
+                    placeholder="10-digit mobile number"
+                  />
+                </div>
+                <p className="text-[11px] text-muted mt-1">For the bill / WhatsApp receipt</p>
               </div>
 
               {err && (

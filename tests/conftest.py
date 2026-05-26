@@ -9,6 +9,17 @@ from app.db import Database, set_db
 from app.main import create_app
 
 
+@pytest.fixture(autouse=True)
+def reset_limiter():
+    """slowapi keeps in-memory rate-limit state between tests; reset it each test."""
+    from app.routers.customer import limiter
+    try:
+        limiter.reset()
+    except Exception:
+        pass
+    yield
+
+
 @pytest.fixture
 def db_path():
     fd, path = tempfile.mkstemp(suffix=".db")

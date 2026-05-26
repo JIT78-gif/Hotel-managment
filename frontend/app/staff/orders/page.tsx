@@ -1,10 +1,16 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Check, PackageCheck } from "lucide-react";
 import { api } from "@/lib/api";
 import { getStaffSession } from "@/lib/auth";
 import { useStaffWs } from "@/lib/ws";
-import type { Order, OrderStatus } from "@/lib/types";
+import type { ItemStatus, Order, OrderItem, OrderStatus } from "@/lib/types";
+
+const NEXT_ITEM: Record<ItemStatus, ItemStatus> = {
+  pending: "ready",
+  ready:   "served",
+  served:  "pending",
+};
 
 const COLUMNS: { key: OrderStatus; label: string; cls: string; ring: string }[] = [
   { key: "placed",    label: "New",        cls: "border-amber-400",    ring: "ring-amber-200" },
@@ -39,8 +45,32 @@ export default function StaffOrdersPage() {
   }, []);
 
   const wsStatus = useStaffWs(token, (m) => {
-    if (m.event === "new_order" || m.event === "status_changed") upsert(m.order);
+    if (m.event === "new_order" || m.event === "status_changed" || m.event === "item_status_changed") {
+      upsert(m.order);
+    }
   });
+
+  async function toggleItem(order: Order, item: OrderItem) {
+    if (!token || !item.item_id) return;
+    const current = (item.status ?? "pending") as ItemStatus;
+    const next = NEXT_ITEM[current];
+    // Optimistic UI: cycle locally first so the kitchen doesn't feel lag
+    upsert({
+      ...order,
+      items: order.items.map(i => (i.item_id === item.item_id ? { ...i, status: next } : i)),
+    });
+    try {
+      const updated = await api<Order>(
+        `/staff/orders/${order.id}/items/${item.item_id}`,
+        { method: "PATCH", staffToken: token, json: { status: next } },
+      );
+      upsert(updated);
+    } catch (e: any) {
+      // Roll back on failure
+      upsert(order);
+      alert(e.message);
+    }
+  }
 
   async function advance(o: Order) {
     const next = NEXT[o.status];
@@ -107,7 +137,7 @@ export default function StaffOrdersPage() {
             <li className="text-sm text-muted/70 text-center py-12 italic">Nothing here yet</li>
           )}
           {byStatus[tab].map(o => (
-            <OrderCard key={o.id} order={o} onAdvance={advance} />
+            <OrderCard key={o.id} order={o} onAdvance={advance} onToggleItem={toggleItem} />
           ))}
         </ul>
       </div>
@@ -125,7 +155,7 @@ export default function StaffOrdersPage() {
                 <li className="text-sm text-muted/70 text-center py-6 italic">Nothing here yet</li>
               )}
               {byStatus[col.key].map(o => (
-                <OrderCard key={o.id} order={o} onAdvance={advance} />
+                <OrderCard key={o.id} order={o} onAdvance={advance} onToggleItem={toggleItem} />
               ))}
             </ul>
           </section>
@@ -135,8 +165,17 @@ export default function StaffOrdersPage() {
   );
 }
 
-function OrderCard({ order: o, onAdvance }: { order: Order; onAdvance: (o: Order) => void }) {
+function OrderCard({
+  order: o, onAdvance, onToggleItem,
+}: {
+  order: Order;
+  onAdvance: (o: Order) => void;
+  onToggleItem: (o: Order, item: OrderItem) => void;
+}) {
   const next = NEXT[o.status];
+  const readyCount = o.items.filter(i => i.status === "ready").length;
+  const servedCount = o.items.filter(i => i.status === "served").length;
+  const totalCount = o.items.length;
   return (
     <li className="card p-4 animate-fade-up">
       <div className="flex items-baseline justify-between gap-2 mb-2">
@@ -145,14 +184,65 @@ function OrderCard({ order: o, onAdvance }: { order: Order; onAdvance: (o: Order
           {new Date(o.created_at + "Z").toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
         </div>
       </div>
-      <div className="text-xs text-muted mb-3 truncate">{o.customer_name}</div>
+      <div className="flex items-center justify-between text-xs text-muted mb-3 gap-2">
+        <span className="truncate">{o.customer_name}</span>
+        <span className="tabular-nums shrink-0">
+          <span className="text-forest font-medium">{servedCount}</span>/{totalCount} served
+          {readyCount > 0 && <span className="ml-1">· {readyCount} waiting</span>}
+        </span>
+      </div>
       <ul className="text-sm space-y-1 mb-3">
-        {o.items.map(it => (
-          <li key={it.menu_item_id} className="flex justify-between">
-            <span><span className="tabular-nums text-muted mr-2">×{it.quantity}</span>{it.name}</span>
-          </li>
-        ))}
+        {o.items.map(it => {
+          const status = (it.status ?? "pending") as ItemStatus;
+          const isReady = status === "ready";
+          const isServed = status === "served";
+          const isPending = status === "pending";
+          return (
+            <li key={it.item_id ?? it.menu_item_id}>
+              <button
+                onClick={() => onToggleItem(o, it)}
+                disabled={!it.item_id}
+                className={`w-full flex items-center justify-between gap-2 py-1 px-1 -mx-1 rounded transition text-left
+                            hover:bg-parchment/50 active:scale-[0.99]`}
+                aria-label={`${it.name} — ${status}, tap to advance`}
+                title={`Tap to advance: ${status} → ${NEXT_ITEM[status]}`}
+              >
+                <span className="flex items-center gap-2 min-w-0">
+                  <span className={`shrink-0 w-5 h-5 rounded-md border-2 grid place-items-center transition ${
+                    isServed
+                      ? "bg-forest border-forest text-cream"
+                      : isReady
+                      ? "bg-forest border-forest text-cream"
+                      : "border-parchment bg-cream"
+                  }`}>
+                    {isServed && <PackageCheck size={12} strokeWidth={2.5} />}
+                    {isReady && <Check size={12} strokeWidth={3} />}
+                  </span>
+                  <span className={`tabular-nums ${isReady ? "text-muted line-through" : isServed ? "text-forest" : "text-muted"}`}>
+                    ×{it.quantity}
+                  </span>
+                  <span className={
+                    isReady ? "line-through text-muted" :
+                    isServed ? "text-forest font-medium" :
+                    ""
+                  }>{it.name}</span>
+                  {isServed && (
+                    <span className="text-[9px] uppercase tracking-wide font-medium text-forest ml-auto">delivered</span>
+                  )}
+                  {isPending && (
+                    <span className="text-[9px] uppercase tracking-wide text-muted/60 ml-auto">pending</span>
+                  )}
+                </span>
+              </button>
+            </li>
+          );
+        })}
       </ul>
+      {o.instructions && (
+        <div className="mb-3 text-sm italic text-terracotta-dark bg-terracotta/10 border-l-4 border-terracotta rounded-r px-2 py-1.5">
+          “{o.instructions}”
+        </div>
+      )}
       <div className="flex items-center justify-between pt-3 border-t border-parchment">
         <span className="tabular-nums font-medium">₹{o.total_amount.toFixed(0)}</span>
         {next && (

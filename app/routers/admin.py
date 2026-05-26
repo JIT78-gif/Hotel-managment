@@ -1,15 +1,17 @@
 import sqlite3
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app import auth as auth_mod
 from app.auth import admin_cafe_id as staff_cafe_id  # admin-only for /admin/*
 from app.db import get_conn
 from app.models import (
-    CategoryIn, CategoryOut, CreateUserRequest, MenuItemIn, MenuItemOut,
-    MenuItemUpdate, TableIn, TableOut, UserOut,
+    CafeInfo, CategoryIn, CategoryOut, CreateUserRequest, FeedbackOut,
+    MenuItemIn, MenuItemOut, MenuItemUpdate, TableBillSummary, TableIn, TableInfo,
+    TableOut, TableSessionInfo, UpdateGstRequest, UserOut,
 )
+from app.realtime import manager
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -178,13 +180,316 @@ def delete_item(item_id: int, cafe_id: int = Depends(staff_cafe_id), conn=Depend
 
 
 # Tables
-@router.get("/tables", response_model=List[TableOut])
+@router.get("/tables", response_model=List[TableInfo])
 def list_tables(cafe_id: int = Depends(staff_cafe_id), conn=Depends(get_conn)):
     rows = conn.execute(
-        "SELECT id, table_number FROM tables WHERE cafe_id = ? ORDER BY id",
+        "SELECT id, table_number, is_occupied FROM tables "
+        "WHERE cafe_id = ? ORDER BY id",
         (cafe_id,),
     ).fetchall()
-    return [TableOut(id=r["id"], table_number=r["table_number"]) for r in rows]
+    out: List[TableInfo] = []
+    for r in rows:
+        info = TableInfo(
+            id=r["id"],
+            table_number=r["table_number"],
+            is_occupied=bool(r["is_occupied"]),
+        )
+        # Only surface session data when the table is actually occupied.
+        # This protects against legacy / orphaned unpaid sessions from earlier testing
+        # showing up as ghost diners on idle tables.
+        if not r["is_occupied"]:
+            out.append(info)
+            continue
+        # Multi-person: aggregate across EVERY unpaid session at this table
+        sessions = conn.execute(
+            "SELECT token, name, phone, bill_requested, created_at FROM customer_sessions "
+            "WHERE cafe_id = ? AND table_id = ? AND paid = 0 ORDER BY created_at",
+            (cafe_id, r["id"]),
+        ).fetchall()
+        if sessions:
+            primary = sessions[0]
+            other_names = [s["name"] for s in sessions[1:]]
+            display_name = primary["name"]
+            if other_names:
+                display_name = f"{primary['name']} + {len(other_names)} other" + ("s" if len(other_names) > 1 else "")
+            any_bill_requested = any(bool(s["bill_requested"]) for s in sessions)
+            info.session = TableSessionInfo(
+                name=display_name,
+                phone=primary["phone"],
+                token=primary["token"],
+                bill_requested=any_bill_requested,
+                started_at=primary["created_at"],
+                party_size=len(sessions),
+            )
+            tokens = [s["token"] for s in sessions]
+            placeholders = ",".join("?" * len(tokens))
+            bill_rows = conn.execute(
+                f"SELECT total_amount, gst_amount FROM orders WHERE session_token IN ({placeholders})",
+                tokens,
+            ).fetchall()
+            subtotal = sum(float(o["total_amount"]) for o in bill_rows)
+            gst = sum(float(o["gst_amount"]) for o in bill_rows)
+            item_count_row = conn.execute(
+                f"SELECT COALESCE(SUM(quantity), 0) AS n FROM order_items "
+                f"WHERE order_id IN (SELECT id FROM orders WHERE session_token IN ({placeholders}))",
+                tokens,
+            ).fetchone()
+            info.bill = TableBillSummary(
+                subtotal=round(subtotal, 2),
+                gst_amount=round(gst, 2),
+                grand_total=round(subtotal + gst, 2),
+                order_count=len(bill_rows),
+                item_count=int(item_count_row["n"] or 0),
+            )
+        out.append(info)
+    return out
+
+
+def _active_sessions_for_table(conn, cafe_id: int, table_id: int):
+    """Every unpaid customer session currently dining at this table (multi-person).
+
+    Returns an empty list if the table itself is not occupied — defensive
+    against legacy orphaned sessions where `paid = 0` but the table was
+    never properly closed (e.g., before mark-paid existed).
+    """
+    t = conn.execute(
+        "SELECT is_occupied FROM tables WHERE id = ? AND cafe_id = ?",
+        (table_id, cafe_id),
+    ).fetchone()
+    if not t or not t["is_occupied"]:
+        return []
+    return conn.execute(
+        "SELECT token, name, phone, bill_requested, created_at FROM customer_sessions "
+        "WHERE cafe_id = ? AND table_id = ? AND paid = 0 ORDER BY created_at",
+        (cafe_id, table_id),
+    ).fetchall()
+
+
+@router.get("/tables/{table_id}/bill")
+def get_table_bill(
+    table_id: int,
+    cafe_id: int = Depends(staff_cafe_id),
+    conn=Depends(get_conn),
+):
+    """Combined bill across every person currently dining at this table."""
+    row = conn.execute(
+        "SELECT id, cafe_id, table_number FROM tables WHERE id = ?",
+        (table_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "table not found")
+    if row["cafe_id"] != cafe_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "table belongs to a different cafe")
+
+    sessions = _active_sessions_for_table(conn, cafe_id, table_id)
+    if not sessions:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no active session at this table")
+
+    primary = sessions[0]
+    other_names = [s["name"] for s in sessions[1:]]
+    display_name = primary["name"]
+    if other_names:
+        display_name = f"{primary['name']} + {len(other_names)} other" + ("s" if len(other_names) > 1 else "")
+    any_bill_requested = any(bool(s["bill_requested"]) for s in sessions)
+
+    tokens = [s["token"] for s in sessions]
+    placeholders = ",".join("?" * len(tokens))
+    orders = conn.execute(
+        f"SELECT id, session_token, status, total_amount, gst_rate, gst_amount, instructions, created_at "
+        f"FROM orders WHERE session_token IN ({placeholders}) ORDER BY created_at",
+        tokens,
+    ).fetchall()
+
+    # Map session token → name so admin can see WHO placed each order
+    name_by_token = {s["token"]: s["name"] for s in sessions}
+
+    detailed = []
+    subtotal = 0.0
+    gst_total = 0.0
+    for o in orders:
+        items = conn.execute(
+            "SELECT name_snapshot, price_snapshot, quantity FROM order_items WHERE order_id = ?",
+            (o["id"],),
+        ).fetchall()
+        detailed.append({
+            "id": o["id"],
+            "status": o["status"],
+            "subtotal": float(o["total_amount"]),
+            "gst_amount": float(o["gst_amount"]),
+            "grand_total": round(float(o["total_amount"]) + float(o["gst_amount"]), 2),
+            "instructions": o["instructions"] or "",
+            "placed_by": name_by_token.get(o["session_token"], ""),
+            "created_at": o["created_at"],
+            "items": [
+                {"name": i["name_snapshot"], "price": float(i["price_snapshot"]), "quantity": i["quantity"]}
+                for i in items
+            ],
+        })
+        subtotal += float(o["total_amount"])
+        gst_total += float(o["gst_amount"])
+
+    return {
+        "table_id": table_id,
+        "table_number": row["table_number"],
+        "session": {
+            "name": display_name,
+            "phone": primary["phone"],
+            "bill_requested": any_bill_requested,
+            "started_at": primary["created_at"],
+            "party_size": len(sessions),
+        },
+        "subtotal": round(subtotal, 2),
+        "gst_amount": round(gst_total, 2),
+        "grand_total": round(subtotal + gst_total, 2),
+        "orders": detailed,
+    }
+
+
+@router.post("/tables/{table_id}/mark_paid")
+async def mark_table_paid(
+    table_id: int,
+    cafe_id: int = Depends(staff_cafe_id),
+    conn=Depends(get_conn),
+):
+    """Admin closes the table: marks every unpaid session paid, frees the table."""
+    row = conn.execute(
+        "SELECT id, cafe_id, table_number FROM tables WHERE id = ?",
+        (table_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "table not found")
+    if row["cafe_id"] != cafe_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "table belongs to a different cafe")
+
+    sessions = _active_sessions_for_table(conn, cafe_id, table_id)
+    if not sessions:
+        raise HTTPException(status.HTTP_409_CONFLICT, "table is already idle")
+
+    tokens = [s["token"] for s in sessions]
+    placeholders = ",".join("?" * len(tokens))
+
+    # Compute final totals before closing
+    bill_rows = conn.execute(
+        f"SELECT total_amount, gst_amount FROM orders WHERE session_token IN ({placeholders})",
+        tokens,
+    ).fetchall()
+    subtotal = sum(float(o["total_amount"]) for o in bill_rows)
+    gst = sum(float(o["gst_amount"]) for o in bill_rows)
+    grand_total = round(subtotal + gst, 2)
+
+    # Close ALL active sessions at this table
+    conn.execute(
+        f"UPDATE customer_sessions SET paid = 1, paid_at = datetime('now'), expires_at = datetime('now') "
+        f"WHERE token IN ({placeholders})",
+        tokens,
+    )
+    conn.execute(
+        "UPDATE tables SET is_occupied = 0, current_session_token = NULL WHERE id = ?",
+        (table_id,),
+    )
+    conn.commit()
+
+    await manager.broadcast(cafe_id, {
+        "event": "table_paid",
+        "table": {
+            "id": table_id,
+            "table_number": row["table_number"],
+            "session_tokens": tokens,
+            "grand_total": grand_total,
+            "party_size": len(sessions),
+        },
+    })
+    return {
+        "table_id": table_id,
+        "subtotal": round(subtotal, 2),
+        "gst_amount": round(gst, 2),
+        "grand_total": grand_total,
+        "party_size": len(sessions),
+        "paid": True,
+    }
+
+
+# Cafe settings (GST rate)
+@router.get("/cafe", response_model=CafeInfo)
+def get_cafe(cafe_id: int = Depends(staff_cafe_id), conn=Depends(get_conn)):
+    row = conn.execute("SELECT id, name, gst_rate FROM cafes WHERE id = ?", (cafe_id,)).fetchone()
+    if not row:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "cafe not found")
+    return CafeInfo(id=row["id"], name=row["name"], gst_rate=float(row["gst_rate"]))
+
+
+@router.patch("/cafe", response_model=CafeInfo)
+def update_cafe(
+    req: UpdateGstRequest,
+    cafe_id: int = Depends(staff_cafe_id),
+    conn=Depends(get_conn),
+):
+    conn.execute("UPDATE cafes SET gst_rate = ? WHERE id = ?", (req.gst_rate, cafe_id))
+    conn.commit()
+    row = conn.execute("SELECT id, name, gst_rate FROM cafes WHERE id = ?", (cafe_id,)).fetchone()
+    return CafeInfo(id=row["id"], name=row["name"], gst_rate=float(row["gst_rate"]))
+
+
+# Feedback — list customer feedback for this cafe
+_FEEDBACK_PERIOD_CLAUSES = {
+    "today": "AND date(created_at) = date('now', 'localtime')",
+    "week":  "AND created_at >= datetime('now', '-7 days')",
+    "month": "AND created_at >= datetime('now', '-30 days')",
+    "all":   "",
+}
+
+
+@router.get("/feedback")
+def list_feedback(
+    period: Optional[str] = Query(default="all"),
+    cafe_id: int = Depends(staff_cafe_id),
+    conn=Depends(get_conn),
+):
+    if period and period not in _FEEDBACK_PERIOD_CLAUSES:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid period")
+    where = "WHERE cafe_id = ?"
+    if period:
+        where += " " + _FEEDBACK_PERIOD_CLAUSES[period]
+
+    rows = conn.execute(
+        f"SELECT id, table_number_snapshot AS table_number, customer_name, customer_phone, "
+        f"       rating, comment, created_at "
+        f"FROM feedback {where} ORDER BY created_at DESC, id DESC LIMIT 200",
+        (cafe_id,),
+    ).fetchall()
+
+    # Summary stats — across the period
+    stats_row = conn.execute(
+        f"SELECT COUNT(*) AS n, AVG(rating) AS avg_rating FROM feedback {where}",
+        (cafe_id,),
+    ).fetchone()
+
+    # Weekly average is always computed regardless of period filter
+    week_row = conn.execute(
+        "SELECT AVG(rating) AS avg_rating FROM feedback "
+        "WHERE cafe_id = ? AND created_at >= datetime('now', '-7 days')",
+        (cafe_id,),
+    ).fetchone()
+
+    return {
+        "feedback": [
+            {
+                "id": r["id"],
+                "table_number": r["table_number"],
+                "customer_name": r["customer_name"],
+                "customer_phone": r["customer_phone"],
+                "rating": r["rating"],
+                "comment": r["comment"] or "",
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ],
+        "stats": {
+            "count": int(stats_row["n"] or 0),
+            "avg_rating": round(float(stats_row["avg_rating"]), 2) if stats_row["avg_rating"] else None,
+            "week_avg_rating": round(float(week_row["avg_rating"]), 2) if week_row["avg_rating"] else None,
+        },
+    }
 
 
 @router.post("/tables", response_model=TableOut, status_code=201)

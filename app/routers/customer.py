@@ -9,6 +9,7 @@ from app.db import get_conn
 from app.models import (
     CheckinRequest,
     CheckinResponse,
+    FeedbackIn,
     MenuCategoryOut,
     MenuItemOut,
     MenuOut,
@@ -24,12 +25,45 @@ router = APIRouter(prefix="/customer", tags=["customer"])
 
 def _load_session(conn, token: str):
     row = conn.execute(
-        "SELECT token, cafe_id, table_id, name, phone, expires_at FROM customer_sessions WHERE token = ?",
+        "SELECT * FROM customer_sessions WHERE token = ?",
         (token,),
     ).fetchone()
     if not row:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid session token")
     return row
+
+
+def _normalize_table_key(s: str) -> str:
+    """Canonical key for matching table numbers.
+
+    "T1", "t1", "T 1", "1" all collapse to "1". This lets a customer type
+    just "1" and still find the admin's "T1". Non-numeric (e.g. "VIP") keep
+    their uppercased form.
+    """
+    s = (s or "").strip().upper().replace(" ", "")
+    if s.startswith("T") and s[1:].isdigit():
+        return s[1:]
+    return s
+
+
+def _find_table_smart(conn, cafe_id: int, typed: str):
+    """Find a table at this cafe whose number matches the typed value under
+    the normalized key. If multiple match, prefer the one with the T prefix
+    (that's the admin's canonical form)."""
+    key = _normalize_table_key(typed)
+    rows = conn.execute(
+        "SELECT id, table_number FROM tables WHERE cafe_id = ?",
+        (cafe_id,),
+    ).fetchall()
+    matches = [r for r in rows if _normalize_table_key(r["table_number"]) == key]
+    if not matches:
+        return None
+    # Prefer T-prefixed when duplicates exist (e.g. T1 wins over 1)
+    matches.sort(key=lambda r: (
+        not r["table_number"].upper().startswith("T"),
+        r["id"],
+    ))
+    return matches[0]
 
 
 @router.post("/checkin", response_model=CheckinResponse)
@@ -46,32 +80,16 @@ def checkin(request: Request, req: CheckinRequest, conn=Depends(get_conn)):
         tn = req.table_number.strip()
         if not tn:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "table_number is empty")
-        existing = conn.execute(
-            "SELECT id, table_number FROM tables WHERE cafe_id = ? AND table_number = ?",
-            (req.cafe_id, tn),
-        ).fetchone()
-        if existing:
-            table_id = existing["id"]
-            table_number = existing["table_number"]
-        else:
-            # Auto-create on first sight so guests don't get stuck at unknown tables
-            try:
-                cur = conn.execute(
-                    "INSERT INTO tables (cafe_id, table_number) VALUES (?, ?)",
-                    (req.cafe_id, tn),
-                )
-                conn.commit()
-                table_id = cur.lastrowid
-                table_number = tn
-            except sqlite3.IntegrityError:
-                row = conn.execute(
-                    "SELECT id, table_number FROM tables WHERE cafe_id = ? AND table_number = ?",
-                    (req.cafe_id, tn),
-                ).fetchone()
-                if not row:
-                    raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "could not create table")
-                table_id = row["id"]
-                table_number = row["table_number"]
+        # Smart match: customer types "1" → finds "T1" (and vice versa).
+        # Admin manages tables explicitly — we do NOT auto-create on unknown input.
+        matched = _find_table_smart(conn, req.cafe_id, tn)
+        if not matched:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"Table '{tn}' not found at this cafe. Please double-check the number on your QR card or ask staff.",
+            )
+        table_id = matched["id"]
+        table_number = matched["table_number"]
     elif req.table_id is not None:
         existing = conn.execute(
             "SELECT id, table_number FROM tables WHERE id = ? AND cafe_id = ?",
@@ -87,11 +105,36 @@ def checkin(request: Request, req: CheckinRequest, conn=Depends(get_conn)):
             "either table_number or table_id must be provided",
         )
 
+    # Resume: an unpaid session for this (cafe, table, phone) means this customer
+    # closed the browser and came back. Return their existing token.
+    phone = req.phone.strip()
+    existing_session = conn.execute(
+        "SELECT token, expires_at FROM customer_sessions "
+        "WHERE cafe_id = ? AND table_id = ? AND phone = ? AND paid = 0 "
+        "ORDER BY created_at DESC LIMIT 1",
+        (req.cafe_id, table_id, phone),
+    ).fetchone()
+    if existing_session:
+        return CheckinResponse(
+            session_token=existing_session["token"],
+            expires_at=existing_session["expires_at"],
+            table_id=table_id, table_number=table_number,
+        )
+
+    # New session — but unlike a strict 1-phone-per-table policy, we ALLOW multiple
+    # phones at the same table (real dining parties have multiple people). All their
+    # orders combine into one bill, and admin marks the table paid once for everyone.
     token = auth_mod.new_session_token()
     expires = auth_mod.session_expiry()
     conn.execute(
         "INSERT INTO customer_sessions (token, cafe_id, table_id, name, phone, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (token, req.cafe_id, table_id, req.name, req.phone, expires),
+        (token, req.cafe_id, table_id, req.name, phone, expires),
+    )
+    # Mark the table occupied; current_session_token tracks the most recent joiner.
+    # The billing query aggregates across ALL unpaid sessions at this table.
+    conn.execute(
+        "UPDATE tables SET is_occupied = 1, current_session_token = ? WHERE id = ?",
+        (token, table_id),
     )
     conn.commit()
     return CheckinResponse(
@@ -107,6 +150,9 @@ def menu(
 ):
     session = _load_session(conn, session_token)
     cafe_id = session["cafe_id"]
+    cafe = conn.execute(
+        "SELECT name, gst_rate FROM cafes WHERE id = ?", (cafe_id,)
+    ).fetchone()
     cats = conn.execute(
         "SELECT id, name, sort_order FROM menu_categories WHERE cafe_id = ? ORDER BY sort_order, id",
         (cafe_id,),
@@ -130,7 +176,11 @@ def menu(
         MenuCategoryOut(id=c["id"], name=c["name"], sort_order=c["sort_order"], items=items_by_cat.get(c["id"], []))
         for c in cats
     ]
-    return MenuOut(categories=categories)
+    return MenuOut(
+        categories=categories,
+        gst_rate=float(cafe["gst_rate"]) if cafe else 0,
+        cafe_name=cafe["name"] if cafe else "",
+    )
 
 
 @router.post("/orders", response_model=PlaceOrderResponse)
@@ -162,9 +212,17 @@ async def place_order(
         snapshots.append((m["id"], m["name"], m["price"], item.quantity))
         total += m["price"] * item.quantity
 
+    # Snapshot the cafe's GST rate onto the order so historical bills are stable
+    cafe = conn.execute("SELECT gst_rate FROM cafes WHERE id = ?", (cafe_id,)).fetchone()
+    gst_rate = float(cafe["gst_rate"]) if cafe else 0.0
+    gst_amount = round(total * gst_rate / 100, 2)
+
+    instructions = (req.instructions or "").strip()[:300]
+
     cur = conn.execute(
-        "INSERT INTO orders (cafe_id, table_id, session_token, status, total_amount) VALUES (?, ?, ?, 'placed', ?)",
-        (cafe_id, table_id, session_token, total),
+        "INSERT INTO orders (cafe_id, table_id, session_token, status, total_amount, instructions, gst_rate, gst_amount) "
+        "VALUES (?, ?, ?, 'placed', ?, ?, ?, ?)",
+        (cafe_id, table_id, session_token, total, instructions, gst_rate, gst_amount),
     )
     order_id = cur.lastrowid
     conn.executemany(
@@ -183,6 +241,9 @@ async def place_order(
             "customer_name": session["name"],
             "status": "placed",
             "total_amount": total,
+            "instructions": instructions,
+            "gst_rate": gst_rate,
+            "gst_amount": gst_amount,
             "items": [
                 OrderItemOut(menu_item_id=mid, name=name, price=price, quantity=qty).model_dump()
                 for (mid, name, price, qty) in snapshots
@@ -191,23 +252,44 @@ async def place_order(
     }
     await manager.broadcast(cafe_id, payload)
 
-    return PlaceOrderResponse(order_id=order_id, total_amount=total, status="placed")
+    return PlaceOrderResponse(
+        order_id=order_id,
+        total_amount=total,
+        gst_amount=gst_amount,
+        grand_total=round(total + gst_amount, 2),
+        status="placed",
+    )
 
 
 def _customer_order_view(conn, row) -> dict:
     items = conn.execute(
-        "SELECT menu_item_id, name_snapshot, price_snapshot, quantity FROM order_items WHERE order_id = ?",
+        "SELECT id, menu_item_id, name_snapshot, price_snapshot, quantity, status "
+        "FROM order_items WHERE order_id = ? ORDER BY id",
         (row["id"],),
     ).fetchall()
+    subtotal = float(row["total_amount"])
+    gst_rate = float(row["gst_rate"]) if "gst_rate" in row.keys() else 0.0
+    gst_amount = float(row["gst_amount"]) if "gst_amount" in row.keys() else 0.0
+    instructions = row["instructions"] if "instructions" in row.keys() else ""
     return {
         "id": row["id"],
         "status": row["status"],
-        "total_amount": row["total_amount"],
+        "total_amount": subtotal,
+        "gst_rate": gst_rate,
+        "gst_amount": gst_amount,
+        "grand_total": round(subtotal + gst_amount, 2),
+        "instructions": instructions,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "items": [
-            {"menu_item_id": i["menu_item_id"], "name": i["name_snapshot"],
-             "price": i["price_snapshot"], "quantity": i["quantity"]}
+            {
+                "item_id": i["id"],
+                "menu_item_id": i["menu_item_id"],
+                "name": i["name_snapshot"],
+                "price": i["price_snapshot"],
+                "quantity": i["quantity"],
+                "status": (i["status"] if "status" in i.keys() else "pending") or "pending",
+            }
             for i in items
         ],
     }
@@ -218,12 +300,47 @@ def list_my_orders(
     conn=Depends(get_conn),
     session_token: str = Depends(auth_mod.require_customer_session),
 ):
-    _load_session(conn, session_token)
+    sess = _load_session(conn, session_token)
     rows = conn.execute(
         "SELECT * FROM orders WHERE session_token = ? ORDER BY created_at DESC",
         (session_token,),
     ).fetchall()
-    return [_customer_order_view(conn, r) for r in rows]
+
+    # Bill-gate visibility: the gate counts across EVERY unpaid session at the
+    # table (multi-person party). The customer only sees their own orders, so
+    # without this number their screen would say "all served" while the bill
+    # request still 409s on another diner's pending items.
+    table_unserved = conn.execute(
+        "SELECT COUNT(*) AS n FROM order_items oi "
+        "JOIN orders o ON o.id = oi.order_id "
+        "WHERE o.session_token IN ("
+        "  SELECT token FROM customer_sessions "
+        "  WHERE cafe_id = ? AND table_id = ? AND paid = 0"
+        ") AND oi.status != 'served'",
+        (sess["cafe_id"], sess["table_id"]),
+    ).fetchone()["n"]
+
+    # Are any of those unserved items mine, or only at other seats?
+    my_unserved = sum(
+        1
+        for r in rows
+        for i in conn.execute(
+            "SELECT status FROM order_items WHERE order_id = ?", (r["id"],)
+        ).fetchall()
+        if i["status"] != "served"
+    )
+
+    return {
+        "session": {
+            "bill_requested": bool(sess["bill_requested"]) if "bill_requested" in sess.keys() else False,
+            "paid": bool(sess["paid"]) if "paid" in sess.keys() else False,
+        },
+        "table": {
+            "unserved_count": int(table_unserved),
+            "others_unserved_count": max(0, int(table_unserved) - my_unserved),
+        },
+        "orders": [_customer_order_view(conn, r) for r in rows],
+    }
 
 
 @router.get("/orders/{order_id}")
@@ -237,3 +354,86 @@ def get_my_order(
     if not row or row["session_token"] != session_token:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "order not found")
     return _customer_order_view(conn, row)
+
+
+@router.post("/feedback")
+def submit_feedback(
+    req: FeedbackIn,
+    conn=Depends(get_conn),
+    # NOTE: we accept the session token here even when it's expired/paid —
+    # feedback typically arrives AFTER the admin closes the bill.
+    session_token: str = Depends(auth_mod.require_customer_session),
+):
+    sess = conn.execute(
+        "SELECT * FROM customer_sessions WHERE token = ?", (session_token,)
+    ).fetchone()
+    if not sess:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid session token")
+
+    # Idempotency — one feedback per session
+    existing = conn.execute(
+        "SELECT id FROM feedback WHERE session_token = ?", (session_token,)
+    ).fetchone()
+    if existing:
+        return {"ok": True, "id": existing["id"], "duplicate": True}
+
+    table = conn.execute(
+        "SELECT table_number FROM tables WHERE id = ?", (sess["table_id"],)
+    ).fetchone()
+
+    cur = conn.execute(
+        "INSERT INTO feedback (cafe_id, session_token, table_number_snapshot, "
+        "customer_name, customer_phone, rating, comment) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            sess["cafe_id"], session_token,
+            table["table_number"] if table else "",
+            sess["name"], sess["phone"],
+            req.rating, (req.comment or "").strip()[:500],
+        ),
+    )
+    conn.commit()
+    return {"ok": True, "id": cur.lastrowid, "duplicate": False}
+
+
+@router.post("/request_bill")
+async def request_bill(
+    conn=Depends(get_conn),
+    session_token: str = Depends(auth_mod.require_customer_session),
+):
+    session = _load_session(conn, session_token)
+    cafe_id = session["cafe_id"]
+    table_id = session["table_id"]
+
+    # Hard gate: bill can only be requested once every item at this table —
+    # across every unpaid session (multi-person party) — has been served.
+    unserved = conn.execute(
+        "SELECT COUNT(*) AS n FROM order_items oi "
+        "JOIN orders o ON o.id = oi.order_id "
+        "WHERE o.session_token IN ("
+        "  SELECT token FROM customer_sessions "
+        "  WHERE cafe_id = ? AND table_id = ? AND paid = 0"
+        ") AND oi.status != 'served'",
+        (cafe_id, table_id),
+    ).fetchone()["n"]
+    if unserved > 0:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"{unserved} item(s) still on the way — please wait until everything is served.",
+        )
+
+    conn.execute(
+        "UPDATE customer_sessions SET bill_requested = 1 WHERE token = ?",
+        (session_token,),
+    )
+    conn.commit()
+    table_row = conn.execute("SELECT table_number FROM tables WHERE id = ?", (table_id,)).fetchone()
+    await manager.broadcast(cafe_id, {
+        "event": "bill_requested",
+        "table": {
+            "id": table_id,
+            "table_number": table_row["table_number"] if table_row else "",
+            "customer_name": session["name"],
+        },
+    })
+    return {"bill_requested": True}

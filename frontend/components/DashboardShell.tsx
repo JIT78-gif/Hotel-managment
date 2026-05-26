@@ -2,15 +2,18 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ChefHat, ClipboardList, History, Users, UtensilsCrossed, LogOut } from "lucide-react";
+import { ChefHat, ClipboardList, History, MessageSquare, Settings, Users, Utensils, UtensilsCrossed, LogOut } from "lucide-react";
 import { getStaffSession, logoutStaff } from "@/lib/auth";
 import type { LoginResponse } from "@/lib/types";
 
 const navItems = [
-  { href: "/staff/orders",  label: "Orders",  icon: ClipboardList,   roles: ["admin", "staff"] },
-  { href: "/staff/history", label: "History", icon: History,         roles: ["admin", "staff"] },
-  { href: "/admin/menu",    label: "Menu",    icon: UtensilsCrossed, roles: ["admin"] },
-  { href: "/admin/staff",   label: "Team",    icon: Users,           roles: ["admin"] },
+  { href: "/staff/orders",   label: "Orders",   icon: ClipboardList,   roles: ["admin", "staff"] },
+  { href: "/admin/tables",   label: "Tables",   icon: Utensils,        roles: ["admin"] },
+  { href: "/staff/history",  label: "History",  icon: History,         roles: ["admin", "staff"] },
+  { href: "/staff/feedback", label: "Feedback", icon: MessageSquare,   roles: ["admin", "staff"] },
+  { href: "/admin/menu",     label: "Menu",     icon: UtensilsCrossed, roles: ["admin"] },
+  { href: "/admin/staff",    label: "Team",     icon: Users,           roles: ["admin"] },
+  { href: "/admin/settings", label: "Settings", icon: Settings,        roles: ["admin"] },
 ];
 
 export default function DashboardShell({ children }: { children: React.ReactNode }) {

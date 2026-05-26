@@ -1,12 +1,18 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Minus, Plus, ShoppingBag, X, Search } from "lucide-react";
+import { Minus, Plus, ShoppingBag, X, Search, Receipt } from "lucide-react";
 import { api } from "@/lib/api";
 import { getCustomerSession } from "@/lib/auth";
 import type { Menu, MenuItem } from "@/lib/types";
 
 interface CartLine { item: MenuItem; qty: number }
+
+function gstNoticeText(rate: number): string {
+  if (!rate || rate <= 0) return "";
+  return `Prices exclude ${rate % 1 === 0 ? rate.toFixed(0) : rate.toFixed(1)}% GST. Tax added at checkout.`;
+}
 
 export default function MenuPage() {
   const router = useRouter();
@@ -15,6 +21,7 @@ export default function MenuPage() {
   const [open, setOpen] = useState(false);
   const [activeCat, setActiveCat] = useState<number | null>(null);
   const [query, setQuery] = useState("");
+  const [instructions, setInstructions] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [placing, setPlacing] = useState(false);
   const headerRef = useRef<HTMLDivElement>(null);
@@ -75,12 +82,21 @@ export default function MenuPage() {
     try {
       await api<{ order_id: number }>("/customer/orders", {
         method: "POST", sessionToken: s.session_token,
-        json: { items: lines.map(l => ({ menu_item_id: l.item.id, quantity: l.qty })) },
+        json: {
+          items: lines.map(l => ({ menu_item_id: l.item.id, quantity: l.qty })),
+          instructions: instructions.trim(),
+        },
       });
+      setInstructions("");
       router.push("/customer/orders");
     } catch (e: any) { setErr(e.message); }
     finally { setPlacing(false); }
   }
+
+  // GST calculations derived from menu.gst_rate
+  const gstRate = menu?.gst_rate ?? 0;
+  const gstAmount = total * gstRate / 100;
+  const grandTotal = total + gstAmount;
 
   function jumpTo(catId: number) {
     setActiveCat(catId);
@@ -119,6 +135,14 @@ export default function MenuPage() {
                 Hi {session?.name}<span className="text-muted">,</span> <em className="text-terracotta italic">order in</em>.
               </h1>
             </div>
+            <Link
+              href="/customer/orders"
+              className="shrink-0 inline-flex items-center gap-1.5 rounded-full bg-parchment hover:bg-terracotta hover:text-cream text-ink px-3 py-1.5 text-xs font-medium transition active:scale-95"
+              aria-label="Back to your orders"
+            >
+              <Receipt size={14} />
+              <span className="hidden sm:inline">Your orders</span>
+            </Link>
           </div>
 
           {/* Search */}
@@ -130,6 +154,13 @@ export default function MenuPage() {
               className="input pl-10 py-2.5 text-sm bg-parchment/60 border-transparent focus:bg-cream"
             />
           </div>
+
+          {/* GST notice */}
+          {gstRate > 0 && (
+            <div className="mt-2 text-[11px] text-muted text-center">
+              * {gstNoticeText(gstRate)}
+            </div>
+          )}
 
           {/* Category chips */}
           <nav className="mt-3 flex gap-2 overflow-x-auto no-scrollbar snap-strip -mx-4 px-4 md:mx-0 md:px-0">
@@ -251,7 +282,10 @@ export default function MenuPage() {
               <span className="font-medium">View cart</span>
             </span>
             <span className="flex items-center gap-2">
-              <span className="tabular-nums">₹{total.toFixed(0)}</span>
+              <span className="tabular-nums">
+                ₹{total.toFixed(0)}
+                {gstRate > 0 && <span className="text-cream/60 text-xs ml-1">+GST</span>}
+              </span>
               <ShoppingBag size={16} />
             </span>
           </button>
@@ -302,10 +336,41 @@ export default function MenuPage() {
               )}
             </div>
             <div className="border-t border-parchment p-5 md:p-6 space-y-3 safe-bottom">
-              <div className="flex justify-between items-baseline">
-                <span className="text-muted">Total</span>
-                <span className="font-display text-3xl tabular-nums">₹{total.toFixed(0)}</span>
-              </div>
+              {/* Special instructions for the kitchen */}
+              {lines.length > 0 && (
+                <div>
+                  <label className="text-[11px] uppercase tracking-[0.14em] text-muted block mb-1.5 font-medium">
+                    Special requests <span className="lowercase opacity-60">(optional)</span>
+                  </label>
+                  <textarea
+                    className="input min-h-[60px] resize-none text-sm"
+                    maxLength={300}
+                    placeholder="e.g. extra cheese, less spice, no onion"
+                    value={instructions}
+                    onChange={e => setInstructions(e.target.value)}
+                  />
+                </div>
+              )}
+
+              {/* Subtotal + GST + grand total breakdown */}
+              {lines.length > 0 && (
+                <div className="space-y-1 text-sm">
+                  <div className="flex justify-between text-muted">
+                    <span>Subtotal</span>
+                    <span className="tabular-nums">₹{total.toFixed(0)}</span>
+                  </div>
+                  {gstRate > 0 && (
+                    <div className="flex justify-between text-muted">
+                      <span>GST ({gstRate % 1 === 0 ? gstRate.toFixed(0) : gstRate.toFixed(1)}%)</span>
+                      <span className="tabular-nums">₹{gstAmount.toFixed(0)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between items-baseline pt-2 border-t border-parchment">
+                    <span className="font-medium">Grand total</span>
+                    <span className="font-display text-3xl tabular-nums">₹{grandTotal.toFixed(0)}</span>
+                  </div>
+                </div>
+              )}
               {err && <div className="text-sm text-red-700">{err}</div>}
               <button onClick={placeOrder} disabled={lines.length === 0 || placing} className="btn-primary w-full">
                 {placing ? "Sending to kitchen…" : "Place order"}

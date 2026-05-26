@@ -81,6 +81,8 @@ class MenuCategoryOut(BaseModel):
 
 class MenuOut(BaseModel):
     categories: List[MenuCategoryOut]
+    gst_rate: float = 0
+    cafe_name: str = ""
 
 
 class OrderItemIn(BaseModel):
@@ -90,6 +92,10 @@ class OrderItemIn(BaseModel):
 
 class PlaceOrderRequest(BaseModel):
     items: List[OrderItemIn] = Field(min_length=1)
+    instructions: str = Field(default="", max_length=300)
+
+
+ItemStatus = Literal["pending", "ready", "served"]
 
 
 class OrderItemOut(BaseModel):
@@ -97,6 +103,8 @@ class OrderItemOut(BaseModel):
     name: str
     price: float
     quantity: int
+    status: ItemStatus = "pending"
+    item_id: Optional[int] = None  # the order_items row id, used by the per-item PATCH
 
 
 class OrderOut(BaseModel):
@@ -106,6 +114,9 @@ class OrderOut(BaseModel):
     customer_name: str
     status: OrderStatus
     total_amount: float
+    instructions: str = ""
+    gst_rate: float = 0
+    gst_amount: float = 0
     created_at: str
     updated_at: str
     items: List[OrderItemOut]
@@ -114,11 +125,66 @@ class OrderOut(BaseModel):
 class PlaceOrderResponse(BaseModel):
     order_id: int
     total_amount: float
+    gst_amount: float = 0
+    grand_total: float = 0
     status: OrderStatus
+
+
+class UpdateGstRequest(BaseModel):
+    gst_rate: float = Field(ge=0, le=28)
+
+
+class TableSessionInfo(BaseModel):
+    name: str
+    phone: str
+    token: str
+    bill_requested: bool
+    started_at: str
+    party_size: int = 1
+
+
+class TableBillSummary(BaseModel):
+    subtotal: float
+    gst_amount: float
+    grand_total: float
+    order_count: int
+    item_count: int
+
+
+class TableInfo(BaseModel):
+    id: int
+    table_number: str
+    is_occupied: bool
+    session: Optional[TableSessionInfo] = None
+    bill: Optional[TableBillSummary] = None
+
+
+class CafeInfo(BaseModel):
+    id: int
+    name: str
+    gst_rate: float
+
+
+class FeedbackIn(BaseModel):
+    rating: int = Field(ge=1, le=5)
+    comment: str = Field(default="", max_length=500)
+
+
+class FeedbackOut(BaseModel):
+    id: int
+    table_number: str
+    customer_name: str
+    rating: int
+    comment: str
+    created_at: str
 
 
 class UpdateOrderRequest(BaseModel):
     status: OrderStatus
+
+
+class UpdateOrderItemRequest(BaseModel):
+    status: ItemStatus
 
 
 class CategoryIn(BaseModel):

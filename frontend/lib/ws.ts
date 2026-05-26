@@ -3,7 +3,9 @@ import { useEffect, useRef, useState } from "react";
 import { wsUrl } from "./api";
 
 export type WsStatus = "idle" | "connecting" | "open" | "closed" | "error";
-type Msg = { event: string; order: any };
+// Server broadcasts include arbitrary payload keys depending on event type
+// (new_order/status_changed → order; bill_requested/table_paid → table).
+type Msg = { event: string; [key: string]: any };
 
 /**
  * WS hook with a callback ref (always invokes latest onMessage) and
