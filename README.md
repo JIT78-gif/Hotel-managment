@@ -104,3 +104,7 @@ tests/                  pytest
 ## Future ideas (documented in [plan file](C:/Users/SCP/.claude/plans/hello-how-are-you-lively-noodle.md))
 
 Call-waiter button, wait-time estimates from kitchen queue, out-of-stock toggle with instant push, multi-language menu, customer ratings, daily analytics, thermal printer ticket, split bill, WhatsApp receipts, offline-first PWA, per-cafe branding.
+
+## Project Status
+
+Feature branch: Hotel task board UI is under development.
