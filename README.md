@@ -108,3 +108,4 @@ Call-waiter button, wait-time estimates from kitchen queue, out-of-stock toggle 
 ## Project Status
 
 Feature branch: Hotel task board UI is under development.
+Main branch: Hotel Management project setup is complete.
